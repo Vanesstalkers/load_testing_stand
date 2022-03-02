@@ -333,25 +333,64 @@ class fillData {
 const data = new fillData();
 const BASE_MONTH_TERM = 12;
 const BASE_DAY_TERM = 365;
+
+const AIRPORT_COUNT = 1000;
+const COMPANY_COUNT = 2 + Math.ceil(Math.random() * 8); // количество компаний 3-10
 const AIRCRAFT_IN_COMPANY_COUNT = 2;//100;
 
-{   // КОМПАНИИ-ВЛАДЕЛЬЦЫ
-    const companyList = data.addObjectList({
-        type: 'company'
-    });
-    const COMPANY_COUNT = 2 + Math.ceil(Math.random() * 8); // количество компаний 3-10
-    for (let i = 0; i < COMPANY_COUNT; i++){
-        companyList.add({ codeSfx: i });
-    }
-}
 {   // САМОЛЕТЫ
     const aircraftList = data.addObjectList({
         type: 'aircraft'
     });
-    const COMPANY_COUNT = data.getObjectList({type: 'company'}).getItems().length;
     const AIRCRAFT_COUNT = COMPANY_COUNT * AIRCRAFT_IN_COMPANY_COUNT; // количество самолетов [количество компаний]*100
     for (let i = 0; i < AIRCRAFT_COUNT; i++){
         aircraftList.add({ codeSfx: i });
+    }
+}
+if(true){ // АЭРОПОРТЫ
+    /* SELECT *
+    FROM "airport_aircraft_fly_journal" a1
+    LEFT JOIN "airport_aircraft_fly_journal" a2 
+    ON a1.id_aircraft = a2.id_aircraft AND a1.id_airport = a2.id_airport AND a1.add_time + 1 = a2.add_time
+    WHERE a2.id_aircraft IS NOT NULL */
+    {   // АЭРОПОРТЫ
+        const airportList = data.addObjectList({
+            type: 'airport'
+        });
+        for (let i = 0; i < AIRPORT_COUNT; i++){
+            airportList.add({ codeSfx: i });
+        }
+    }
+    {   // ПРИЛЕТЫ САМОЛЕТОВ В АЭРОПОРТЫ В ТЕЧЕНИЕ ГОДА
+        const airportAircraftFlyJournal = data.addJournal({
+            name: 'airport_aircraft_fly_journal', meta: {
+                add_time: 'bigint NOT NULL',
+                id_airport: 'character(100) NOT NULL',
+                id_aircraft: 'character(100) NOT NULL',
+            }
+        });
+        const aircraftListItems = data.getObjectList({type: 'aircraft'}).getItems();
+        const airportListItems = data.getObjectList({type: 'airport'}).getItems();
+    
+        for(const aircraft of aircraftListItems){
+            for (let t = 0; t < BASE_DAY_TERM; t++) { // период в течение которого (каждый день) происходили прилеты самолетов
+                const airport = airportListItems.getRandomItem();
+                airportAircraftFlyJournal.add({
+                    add_time: t,
+                    id_aircraft: aircraft.getId(),
+                    id_airport: airport.getId(),
+                });
+            }
+        }
+    }
+}
+if(false){ // КОМПАНИИ
+{   // КОМПАНИИ-ВЛАДЕЛЬЦЫ
+    const companyList = data.addObjectList({
+        type: 'company'
+    });
+    for (let i = 0; i < COMPANY_COUNT; i++){
+        companyList.add({ codeSfx: i });
     }
 }
 {   // ПЕРВИЧНАЯ ПРИВЯЗКА САМОЛЕТОВ К КОМПАНИЯМ
@@ -482,6 +521,128 @@ const AIRCRAFT_IN_COMPANY_COUNT = 2;//100;
             });
         }
     }
+}
+}
+if(false){ // БАНКИ
+{   // БАНКИ
+    const bankList = data.addObjectList({
+        type: 'bank'
+    });
+    const BANK_COUNT = 10; // количество банков 10
+    for (let i = 0; i < BANK_COUNT; i++){
+        bankList.add({ codeSfx: i });
+    }
+}
+{   // ПРИВЯЗКА САМОЛЕТОВ К БАНКАМ
+    const bankAircraftOwnJournal = data.addJournal({
+        name: 'bank_aircraft_own_journal', meta: {
+            add_time: 'bigint NOT NULL',
+            id_bank: 'character(100) NOT NULL',
+            id_aircraft: 'character(100) NOT NULL',
+        }
+    });
+    const bankListItems = data.getObjectList({type: 'bank'}).getItems();
+    const aircraftListItems = data.getObjectList({type: 'aircraft'}).getItems();
+
+    bankListItems.queueStart();
+    while (aircraftListItems.length) {
+        const bank = bankListItems.queueNext();
+        const aircraft = aircraftListItems.pullRandomItem();
+        bankAircraftOwnJournal.add({
+            add_time: -1,
+            id_bank: bank.getId(),
+            id_aircraft: aircraft.getId(),
+        });
+        aircraft.setParent({ parent: bank });
+    }
+}
+{   // ДЕПАРТАМЕНТЫ В БАНКАХ
+    const bankDepartmentList = data.addObjectList({
+        type: 'bank_department', meta: {
+            id_bank: 'character(100) NOT NULL',
+        }
+    });
+    const bankListItems = data.getObjectList({type: 'bank'}).getItems();
+    let counter = 0;
+
+    for(const bank of bankListItems){
+        const bankId = bank.getId();
+        const DEPARTMENT_COUNT = 99 + Math.ceil(Math.random() * 51); // количество банков 100-150
+        for (let i = 0; i < DEPARTMENT_COUNT; i++){
+            counter++;
+            const department = bankDepartmentList.add({ codeSfx: counter });
+            department.setParent({ parent: bank });
+            department.id_bank = bankId;
+        }    
+    }
+}
+{   // СОТРУДНИКИ В ДЕПАРТАМЕНТАХ В БАНКАХ
+    const bankDepartmentWorkerList = data.addObjectList({
+        type: 'bank_worker', meta: {
+            id_department: 'character(100) NOT NULL',
+        }
+    });
+    const bankDepartmentListItems = data.getObjectList({type: 'bank_department'}).getItems();
+    let counter = 0;
+    
+    for(const department of bankDepartmentListItems){
+        const departmentId = department.getId();
+        const WORKER_COUNT = 19 + Math.ceil(Math.random() * 31); // количество компаний 20-50
+        for (let i = 0; i < WORKER_COUNT; i++){
+            counter++;
+            const worker = bankDepartmentWorkerList.add({ codeSfx: counter });
+            worker.setParent({ parent: department });
+            worker.id_department = departmentId;
+        }    
+    }
+}
+{   // ПЕРВИЧНОЕ НАЗНАЧЕНИЕ ДЕЖУРНЫХ В БАНКАХ
+    const bankWorkerOdJournal = data.addJournal({
+        name: 'bank_worker_od_journal', meta: {
+            add_time: 'bigint NOT NULL',
+            id_department: 'character(100) NOT NULL',
+            id_worker: 'character(100) NOT NULL',
+        }
+    });
+    const bankListItems = data.getObjectList({type: 'bank'}).getItems();
+    for(const bank of bankListItems){
+        const departmentList = bank.getChildList({type: 'bank_department'});
+        const workerList = listHelper(
+            departmentList.reduce((acc, department)=>{
+                return acc.concat( department.getChildList({type: 'bank_worker'}) )
+            }, [])
+        );
+        const worker = workerList.getRandomItem();
+        const workerDepartment = worker.getParent();
+        bankWorkerOdJournal.add({
+            add_time: -1,
+            id_department: workerDepartment.getId(),
+            id_worker: worker.getId(),
+        });
+    }
+}
+{   // СМЕНА ДЕЖУРНЫХ В БАНКАХ В ТЕЧЕНИЕ ГОДА
+    const bankListItems = data.getObjectList({type: 'bank'}).getItems();
+    const bankWorkerOdJournal = data.getJournal({name: 'bank_worker_od_journal'});
+
+    for(const bank of bankListItems){
+        for (let t = 0; t < BASE_DAY_TERM; t++) { // период в течение которого (каждый день) происходили смены дежурных
+            const departmentList = bank.getChildList({type: 'bank_department'});
+            const workerList = listHelper(
+                departmentList.reduce((acc, department)=>{
+                    return acc.concat( department.getChildList({type: 'bank_worker'}) )
+                }, [])
+            );
+            const worker = workerList.getRandomItem();
+            const workerDepartment = worker.getParent();
+            bankWorkerOdJournal.add({
+                add_time: t,
+                id_department: workerDepartment.getId(),
+                id_worker: worker.getId(),
+            });
+        }
+    }
+}
 }
 
 console.log('ready');
