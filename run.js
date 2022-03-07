@@ -1,7 +1,26 @@
+
+const TYPES = {
+    char100: {
+        sql: 'character(100) NOT NULL',
+        sqlRandom: 'md5(random()::text)',
+    },
+    bigint: {
+        sql: 'bigint NOT NULL',
+        sqlRandom: 'floor(random()*1000000)',
+    }
+}
+
 function codeBlock(label, func){
     console.time(label);
     func();
     console.timeEnd(label);
+}
+
+function getPostgresClient(){
+    const { Client } = require('pg');
+    const client = new Client({ user: 'postgres', host: '127.0.0.1', database: 'load_test', password: 'postgres', port: 5432 });
+    client.connect();
+    return client;
 }
 
 /**
@@ -82,7 +101,7 @@ class objectInstance {
      * @param {*} type тип объекта
      * @param {*} codeSfx суффикс к коду объекта
      */
-    constructor({ type, codeSfx } = {}) {
+    constructor({ type, codeSfx = '' } = {}) {
         this.#type = type;
         this.code = type + codeSfx.toString();
         this.id = this.code;
@@ -157,8 +176,8 @@ class fillDataObjectList {
     #name;
     #itemType;
     #itemMeta = {
-        id: 'character(100) NOT NULL',
-        code: 'character(100) NOT NULL',
+        id: TYPES.char100,
+        code: TYPES.char100,
     };
 
     items = {};
@@ -173,14 +192,24 @@ class fillDataObjectList {
         Object.assign(this.#itemMeta, meta);
     }
     /**
+     * Получить тип объектов в каталоге
+     * @returns тип объектов в каталоге
+     */
+    getItemType(){
+        return this.#itemType;
+    }
+    /**
      * Добавление нового объекта в каталог объектов
+     * @param {*} data предустановленные значения объекта
      * @param {*} codeSfx суффикс к коду объекта
      * @returns добавленный объект
      */
-    add({ codeSfx }) {
+    add({ data = {}, codeSfx = '' } = {}) {
+        if(!codeSfx) codeSfx = this.itemsLength;
         const obj = new objectInstance({ type: this.#itemType, codeSfx });
-        this.items[obj.code] = obj;
         this.itemsLength++;
+        Object.assign(obj, data);
+        this.items[obj.code] = obj;
         return obj;
     }
     /**
@@ -212,6 +241,20 @@ class fillDataObjectList {
     getMeta() {
         return this.#itemMeta;
     }
+    toTriples(){
+        const meta = this.getMeta();
+        let triples = [];
+
+        const items = Object.values(this.items);
+        for(const item of items){
+            for(const key of Object.keys(meta).filter(key => key !== 'id')){
+                triples.push([item.id, key, item[key]]);
+            }
+        }
+
+        return triples;
+    }
+
     /**
      * Сформировать SQL для записи каталога в БД
      * @returns сформированный SQL
@@ -221,73 +264,35 @@ class fillDataObjectList {
         let sql = [];
 
         sql.push(`DROP TABLE IF EXISTS "` + this.#name + `"`);
-        sql.push(`CREATE TABLE "` + this.#name + `" (` + Object.entries(meta).map(entry => '"' + entry.join('" ')).join(', ') + `)`);
+        sql.push(`CREATE TABLE "` + this.#name + `" (` + Object.entries(meta).map(([key, value]) => `"${key}" ${value.sql} `).join(', ') + `)`);
 
-        const items = Object.values(this.items);
-        if (items.length) {
-            const insert = [];
-            for (const item of items) {
-                insert.push(`(` + Object.keys(meta).map(key => `'${item[key]}'`) + `)`);
-            }
-            sql.push(`INSERT INTO "` + this.#name + `" (` + Object.keys(meta).map(key => `"${key}"`) + `) VALUES ` + insert.join(', '));
-        }
+        sql = sql.concat( this.insertItemsSQL() );
 
         return sql.join('; ');
     }
-}
-/**
- * Журнал произвольных записей внутри хранилиша
- */
-class fillDataJournal {
-    #name;
-    #itemMeta = {};
-
-    items = [];
     /**
-     * Экземпляр журнала
-     * @param {*} name наименование журнала 
-     * @param {*} meta мета-данные записей журнала
+     * Сформировать insert-SQL для всех записей каталога
+     * @param {*} fake или одну фейковую запись
+     * @returns массив SQL-запросов
      */
-    constructor({ name, meta } = {}) {
-        this.#name = name;
-        this.#itemMeta = meta;
-    }
-    /**
-     * Добавить записи в журнал
-     * @param {*} item произвольная запись
-     */
-    add(item) {
-        this.items.push(item);
-    }
-    /**
-     * Получить мета-данные записей журнала
-     * @returns мета-данные записей журнала
-     */
-    getMeta() {
-        return this.#itemMeta;
-    }
-    /**
-     * Сформировать SQL для записи журнала в БД
-     * @returns сформированный SQL
-     */
-
-    toSQL() {
+    insertItemsSQL({fake} = {}) {
         const meta = this.getMeta();
-        let sql = [];
-
-        sql.push(`DROP TABLE IF EXISTS "` + this.#name + `"`);
-        sql.push(`CREATE TABLE "` + this.#name + `" (` + Object.entries(meta).map(entry => '"' + entry.join('" ')).join(', ') + `)`);
+        const sql = [];
 
         const items = Object.values(this.items);
         if (items.length) {
             const insert = [];
-            for (const item of items) {
-                insert.push(`(` + Object.keys(meta).map(key => `'${item[key]}'`) + `)`);
+            if(fake){
+                insert.push(`(` + Object.values(meta).map(randomValue => randomValue.sqlRandom) + `)`);
+            }else{
+                for (const item of items) {
+                    insert.push(`(` + Object.keys(meta).map(key => `'${item[key]}'`) + `)`);
+                }
             }
             sql.push(`INSERT INTO "` + this.#name + `" (` + Object.keys(meta).map(key => `"${key}"`) + `) VALUES ` + insert.join(', '));
         }
 
-        return sql.join('; ');
+        return sql;
     }
 }
 
@@ -320,25 +325,13 @@ class fillData {
     getObjectListIds({ type }) {
         return this[type].getKeys();
     }
-    /**
-     * Добавить новый журнал в хранилище
-     * @param {*} name наименование журнала 
-     * @param {*} meta мета-данные записей журнала
-     * @returns 
-     */
-    addJournal({ name, meta }) {
-        this[name] = new fillDataJournal({ name, meta });
-        return this[name];
+    createTriples() {
+        let result = [];
+        for (const item of Object.values(this)) {
+            result = result.concat( item.toTriples() );
+        };
+        return result;
     }
-    /**
-     * Получить каталог по типу объектов
-     * @param {*} type тип каталога объектов
-     * @returns ссылка на каталог объектов
-     */
-    getJournal({ name }) {
-        return this[name];
-    }
-
     /**
      * Сформировать SQL для записи хранилища в БД.
      * @returns сформированный SQL
@@ -350,11 +343,27 @@ class fillData {
         };
         return sql.join('; ');
     }
+    /**
+     * Подключиться к Postgres и наполнить ее
+     * @returns ответ из БД
+     */
     async fillPostgres() {
-        const { Client } = require('pg');
-        const client = new Client({ user: 'postgres', host: '127.0.0.1', database: 'load_test', password: 'postgres', port: 5432 });
-        client.connect();
+        const client = getPostgresClient();
         return await client.query(this.createSQL());
+    }
+    async fillPostgresWithFakeData({size = 0} = {}) {
+        const client = getPostgresClient();
+        const result = [];
+        for await (const item of Object.values(this)) {
+            const sql = [];
+            for(let j = 0; j < size; j++){
+                sql.push( item.insertItemsSQL({fake: true}) );
+            }
+            const queryResult = await client.query( sql.join('; ') );
+            result.push( queryResult );
+            console.log(`В каталог "${item.getItemType()}" добавлено ${size} блоков с fake-данными.`);
+        }
+        return result;
     }
 }
 
@@ -363,9 +372,23 @@ const BASE_MONTH_TERM = 12;
 const BASE_WEEK_TERM = 52;
 const BASE_DAY_TERM = 365;
 
-const AIRPORT_COUNT = 100;//1000;
 const COMPANY_COUNT = 10;//2 + Math.ceil(Math.random() * 8); // количество компаний 3-10
-const AIRCRAFT_IN_COMPANY_COUNT = 2;//100;
+const COMPANY_DEPARTMENT_COUNT = 9 + Math.ceil(Math.random() * 11); // количество компаний 10-20
+const COMPANY_WORKER_COUNT = 19 + Math.ceil(Math.random() * 31); // количество компаний 20-50
+const COMPANY_OD_CHANGE_TERM = BASE_DAY_TERM; // КАЖДЫЙ ДЕНЬ/
+const AIRCRAFT_IN_COMPANY_COUNT = 100;
+const AIRCRAFT_TRANSFER_TERM = BASE_MONTH_TERM; // КАЖДЫЙ МЕСЯЦ
+
+const BANK_COUNT = 10; // количество банков 10
+const BANK_DEPARTMENT_COUNT = 99 + Math.ceil(Math.random() * 51); // количество банков 100-150
+const BANK_WORKER_COUNT = 19 + Math.ceil(Math.random() * 31); // количество компаний 20-50
+const BANK_OD_CHANGE_TERM = BASE_DAY_TERM; // КАЖДЫЙ ДЕНЬ
+
+const AIRPORT_COUNT = 1000;
+const AIRPORT_DEPARTMENT_COUNT = 9 + Math.ceil(Math.random() * 11); // количество компаний 10-20
+const AIRPORT_WORKER_COUNT = 19 + Math.ceil(Math.random() * 31); // количество компаний 20-50
+const AIRPORT_HEAD_CHANGE_TERM = BASE_WEEK_TERM / 3; // КАЖДЫЕ 3(ТРИ) НЕДЕЛИ
+const AIRCRAFT_FLY_TERM = BASE_DAY_TERM; // КАЖДЫЙ ДЕНЬ
 
 {   // САМОЛЕТЫ
     const aircraftList = data.addObjectList({
@@ -373,7 +396,7 @@ const AIRCRAFT_IN_COMPANY_COUNT = 2;//100;
     });
     const AIRCRAFT_COUNT = COMPANY_COUNT * AIRCRAFT_IN_COMPANY_COUNT; // количество самолетов [количество компаний]*100
     for (let i = 0; i < AIRCRAFT_COUNT; i++){
-        aircraftList.add({ codeSfx: i });
+        aircraftList.add();
     }
 }
 if(true){ // КОМПАНИИ
@@ -382,15 +405,15 @@ codeBlock('КОМПАНИИ-ВЛАДЕЛЬЦЫ', ()=>{
         type: 'company'
     });
     for (let i = 0; i < COMPANY_COUNT; i++){
-        companyList.add({ codeSfx: i });
+        companyList.add();
     }
 });
 codeBlock('ПЕРВИЧНАЯ ПРИВЯЗКА САМОЛЕТОВ К КОМПАНИЯМ', ()=>{
-    const companyAircraftOwnJournal = data.addJournal({
-        name: 'company_aircraft_own_journal', meta: {
-            add_time: 'bigint NOT NULL',
-            id_company: 'character(100) NOT NULL',
-            id_aircraft: 'character(100) NOT NULL',
+    const companyAircraftOwnJournal = data.addObjectList({
+        type: 'company_aircraft_own_journal', meta: {
+            add_time: TYPES.bigint,
+            id_company: TYPES.char100,
+            id_aircraft: TYPES.char100,
         }
     });
     const companyListItems = data.getObjectList({type: 'company'}).getItems();
@@ -400,29 +423,29 @@ codeBlock('ПЕРВИЧНАЯ ПРИВЯЗКА САМОЛЕТОВ К КОМПА�
     while (aircraftListItems.length) {
         const company = companyListItems.queueNext();
         const aircraft = aircraftListItems.pullRandomItem();
-        companyAircraftOwnJournal.add({
+        companyAircraftOwnJournal.add({data:{
             add_time: -1,
             id_company: company.getId(),
             id_aircraft: aircraft.getId(),
-        });
+        }});
         aircraft.setParent({ parent: company });
     }
 });
 codeBlock('ТРАНСФЕРЫ САМОЛЕТОВ МЕЖДУ КОМПАНИЯМИ В ТЕЧЕНИЕ ГОДА', ()=>{
     const AIRCRAFT_PER_MONTH_TRANSFERRED_COUNT = AIRCRAFT_IN_COMPANY_COUNT;
     const companyListItems = data.getObjectList({type: 'company'}).getItems();
-    const companyAircraftOwnJournal = data.getJournal({name: 'company_aircraft_own_journal'});
+    const companyAircraftOwnJournal = data.getObjectList({type: 'company_aircraft_own_journal'});
 
-    for (let t = 0; t < BASE_MONTH_TERM; t++) { // период в течение которого (каждый месяц) происходили перемещения самолетов
+    for (let t = 0; t < AIRCRAFT_TRANSFER_TERM; t++) { // период в течение которого (каждый месяц) происходили перемещения самолетов
         const aircraftListItems = data.getObjectList({type: 'aircraft'}).getItems();
         for (let i = 0; i < AIRCRAFT_PER_MONTH_TRANSFERRED_COUNT; i++) {
             const company = companyListItems.getRandomItem();
             const aircraft = aircraftListItems.pullRandomItem();
-            companyAircraftOwnJournal.add({
+            companyAircraftOwnJournal.add({data: {
                 add_time: t,
                 id_company: company.getId(),
                 id_aircraft: aircraft.getId(),
-            });
+            }});
             aircraft.setParent({ parent: company });
         }
     }
@@ -430,49 +453,45 @@ codeBlock('ТРАНСФЕРЫ САМОЛЕТОВ МЕЖДУ КОМПАНИЯМИ
 codeBlock('ДЕПАРТАМЕНТЫ В КОМПАНИЯХ-ВЛАДЕЛЬЦАХ', ()=>{
     const companyDepartmentList = data.addObjectList({
         type: 'company_department', meta: {
-            id_company: 'character(100) NOT NULL',
+            id_company: TYPES.char100,
         }
     });
     const companyListItems = data.getObjectList({type: 'company'}).getItems();
-    let counter = 0;
 
     for(const company of companyListItems){
         const companyId = company.getId();
-        const DEPARTMENT_COUNT = 20;//9 + Math.ceil(Math.random() * 11); // количество компаний 10-20
-        for (let i = 0; i < DEPARTMENT_COUNT; i++){
-            counter++;
-            const department = companyDepartmentList.add({ codeSfx: counter });
+        for (let i = 0; i < COMPANY_DEPARTMENT_COUNT; i++){
+            const department = companyDepartmentList.add({data: {
+                id_company: companyId,
+            }});
             department.setParent({ parent: company });
-            department.id_company = companyId;
         }    
     }
 });
 codeBlock('СОТРУДНИКИ В ДЕПАРТАМЕНТАХ В КОМПАНИЯХ-ВЛАДЕЛЬЦАХ', ()=>{
     const companyDepartmentWorkerList = data.addObjectList({
         type: 'company_worker', meta: {
-            id_department: 'character(100) NOT NULL',
+            id_department: TYPES.char100,
         }
     });
     const companyDepartmentListItems = data.getObjectList({type: 'company_department'}).getItems();
-    let counter = 0;
     
     for(const department of companyDepartmentListItems){
         const departmentId = department.getId();
-        const WORKER_COUNT = 50;//19 + Math.ceil(Math.random() * 31); // количество компаний 20-50
-        for (let i = 0; i < WORKER_COUNT; i++){
-            counter++;
-            const worker = companyDepartmentWorkerList.add({ codeSfx: counter });
+        for (let i = 0; i < COMPANY_WORKER_COUNT; i++){
+            const worker = companyDepartmentWorkerList.add({data:{
+                id_department: departmentId,
+            }});
             worker.setParent({ parent: department });
-            worker.id_department = departmentId;
         }    
     }
 });
 codeBlock('ПЕРВИЧНОЕ НАЗНАЧЕНИЕ ДЕЖУРНЫХ В КОМПАНИЯХ', ()=>{
-    const companyWorkerOdJournal = data.addJournal({
-        name: 'company_worker_od_journal', meta: {
-            add_time: 'bigint NOT NULL',
-            id_department: 'character(100) NOT NULL',
-            id_worker: 'character(100) NOT NULL',
+    const companyWorkerOdJournal = data.addObjectList({
+        type: 'company_worker_od_journal', meta: {
+            add_time: TYPES.bigint,
+            id_department: TYPES.char100,
+            id_worker: TYPES.char100,
         }
     });
     const companyListItems = data.getObjectList({type: 'company'}).getItems();
@@ -485,19 +504,19 @@ codeBlock('ПЕРВИЧНОЕ НАЗНАЧЕНИЕ ДЕЖУРНЫХ В КОМП�
         );
         const worker = workerList.getRandomItem();
         const workerDepartment = worker.getParent();
-        companyWorkerOdJournal.add({
+        companyWorkerOdJournal.add({data:{
             add_time: -1,
             id_department: workerDepartment.getId(),
             id_worker: worker.getId(),
-        });
+        }});
     }
 });
 codeBlock('СМЕНА ДЕЖУРНЫХ В КОМПАНИЯХ В ТЕЧЕНИЕ ГОДА', ()=>{
     const companyListItems = data.getObjectList({type: 'company'}).getItems();
-    const companyWorkerOdJournal = data.getJournal({name: 'company_worker_od_journal'});
+    const companyWorkerOdJournal = data.getObjectList({type: 'company_worker_od_journal'});
     const companyWorkerCatalog = catalogHelper();
     for(const company of companyListItems){
-        for (let t = 0; t < BASE_DAY_TERM; t++) { // период в течение которого (каждый день) происходили смены дежурных
+        for (let t = 0; t < COMPANY_OD_CHANGE_TERM; t++) { // период в течение которого (каждый день) происходили смены дежурных
             const workerList = companyWorkerCatalog.get(company.getId(), ()=>{
                 const departmentList = company.getChildList({type: 'company_department'});
                 return listHelper(
@@ -508,11 +527,11 @@ codeBlock('СМЕНА ДЕЖУРНЫХ В КОМПАНИЯХ В ТЕЧЕНИЕ �
             });
             const worker = workerList.getRandomItem();
             const workerDepartment = worker.getParent();
-            companyWorkerOdJournal.add({
+            companyWorkerOdJournal.add({data:{
                 add_time: t,
                 id_department: workerDepartment.getId(),
                 id_worker: worker.getId(),
-            });
+            }});
         }
     }
 });
@@ -522,17 +541,16 @@ codeBlock('БАНКИ', ()=>{
     const bankList = data.addObjectList({
         type: 'bank'
     });
-    const BANK_COUNT = 10; // количество банков 10
     for (let i = 0; i < BANK_COUNT; i++){
-        bankList.add({ codeSfx: i });
+        bankList.add();
     }
 });
 codeBlock('ПРИВЯЗКА САМОЛЕТОВ К БАНКАМ', ()=>{
-    const bankAircraftOwnJournal = data.addJournal({
-        name: 'bank_aircraft_own_journal', meta: {
-            add_time: 'bigint NOT NULL',
-            id_bank: 'character(100) NOT NULL',
-            id_aircraft: 'character(100) NOT NULL',
+    const bankAircraftOwnJournal = data.addObjectList({
+        type: 'bank_aircraft_own_journal', meta: {
+            add_time: TYPES.bigint,
+            id_bank: TYPES.char100,
+            id_aircraft: TYPES.char100,
         }
     });
     const bankListItems = data.getObjectList({type: 'bank'}).getItems();
@@ -542,29 +560,26 @@ codeBlock('ПРИВЯЗКА САМОЛЕТОВ К БАНКАМ', ()=>{
     while (aircraftListItems.length) {
         const bank = bankListItems.queueNext();
         const aircraft = aircraftListItems.pullRandomItem();
-        bankAircraftOwnJournal.add({
+        bankAircraftOwnJournal.add({data: {
             add_time: -1,
             id_bank: bank.getId(),
             id_aircraft: aircraft.getId(),
-        });
+        }});
         aircraft.setParent({ parent: bank });
     }
 });
 codeBlock('ДЕПАРТАМЕНТЫ В БАНКАХ', ()=>{
     const bankDepartmentList = data.addObjectList({
         type: 'bank_department', meta: {
-            id_bank: 'character(100) NOT NULL',
+            id_bank: TYPES.char100,
         }
     });
     const bankListItems = data.getObjectList({type: 'bank'}).getItems();
-    let counter = 0;
 
     for(const bank of bankListItems){
         const bankId = bank.getId();
-        const DEPARTMENT_COUNT = 99 + Math.ceil(Math.random() * 51); // количество банков 100-150
-        for (let i = 0; i < DEPARTMENT_COUNT; i++){
-            counter++;
-            const department = bankDepartmentList.add({ codeSfx: counter });
+        for (let i = 0; i < BANK_DEPARTMENT_COUNT; i++){
+            const department = bankDepartmentList.add();
             department.setParent({ parent: bank });
             department.id_bank = bankId;
         }    
@@ -573,29 +588,26 @@ codeBlock('ДЕПАРТАМЕНТЫ В БАНКАХ', ()=>{
 codeBlock('СОТРУДНИКИ В ДЕПАРТАМЕНТАХ В БАНКАХ', ()=>{
     const bankDepartmentWorkerList = data.addObjectList({
         type: 'bank_worker', meta: {
-            id_department: 'character(100) NOT NULL',
+            id_department: TYPES.char100,
         }
     });
     const bankDepartmentListItems = data.getObjectList({type: 'bank_department'}).getItems();
-    let counter = 0;
     
     for(const department of bankDepartmentListItems){
         const departmentId = department.getId();
-        const WORKER_COUNT = 19 + Math.ceil(Math.random() * 31); // количество компаний 20-50
-        for (let i = 0; i < WORKER_COUNT; i++){
-            counter++;
-            const worker = bankDepartmentWorkerList.add({ codeSfx: counter });
+        for (let i = 0; i < BANK_WORKER_COUNT; i++){
+            const worker = bankDepartmentWorkerList.add();
             worker.setParent({ parent: department });
             worker.id_department = departmentId;
         }    
     }
 });
 codeBlock('ПЕРВИЧНОЕ НАЗНАЧЕНИЕ ДЕЖУРНЫХ В БАНКАХ', ()=>{
-    const bankWorkerOdJournal = data.addJournal({
-        name: 'bank_worker_od_journal', meta: {
-            add_time: 'bigint NOT NULL',
-            id_department: 'character(100) NOT NULL',
-            id_worker: 'character(100) NOT NULL',
+    const bankWorkerOdJournal = data.addObjectList({
+        type: 'bank_worker_od_journal', meta: {
+            add_time: TYPES.bigint,
+            id_department: TYPES.char100,
+            id_worker: TYPES.char100,
         }
     });
     const bankListItems = data.getObjectList({type: 'bank'}).getItems();
@@ -608,19 +620,19 @@ codeBlock('ПЕРВИЧНОЕ НАЗНАЧЕНИЕ ДЕЖУРНЫХ В БАНК�
         );
         const worker = workerList.getRandomItem();
         const workerDepartment = worker.getParent();
-        bankWorkerOdJournal.add({
+        bankWorkerOdJournal.add({data: {
             add_time: -1,
             id_department: workerDepartment.getId(),
             id_worker: worker.getId(),
-        });
+        }});
     }
 });
 codeBlock('СМЕНА ДЕЖУРНЫХ В БАНКАХ В ТЕЧЕНИЕ ГОДА', ()=>{
     const bankListItems = data.getObjectList({type: 'bank'}).getItems();
-    const bankWorkerOdJournal = data.getJournal({name: 'bank_worker_od_journal'});
+    const bankWorkerOdJournal = data.getObjectList({type: 'bank_worker_od_journal'});
     const bankWorkerCatalog = catalogHelper();
     for(const bank of bankListItems){
-        for (let t = 0; t < BASE_DAY_TERM; t++) { // период в течение которого (каждый день) происходили смены дежурных
+        for (let t = 0; t < BANK_OD_CHANGE_TERM; t++) { // период в течение которого (каждый день) происходили смены дежурных
             const workerList = bankWorkerCatalog.get(bank.getId(), ()=>{
                 const departmentList = bank.getChildList({type: 'bank_department'});
                 return listHelper(
@@ -631,11 +643,11 @@ codeBlock('СМЕНА ДЕЖУРНЫХ В БАНКАХ В ТЕЧЕНИЕ ГОД�
             });
             const worker = workerList.getRandomItem();
             const workerDepartment = worker.getParent();
-            bankWorkerOdJournal.add({
+            bankWorkerOdJournal.add({data: {
                 add_time: t,
                 id_department: workerDepartment.getId(),
                 id_worker: worker.getId(),
-            });
+            }});
         }
     }
 });
@@ -646,24 +658,21 @@ codeBlock('АЭРОПОРТЫ', ()=>{
         type: 'airport'
     });
     for (let i = 0; i < AIRPORT_COUNT; i++){
-        airportList.add({ codeSfx: i });
+        airportList.add();
     }
 });
 codeBlock('ДЕПАРТАМЕНТЫ В АЭРОПОРТАХ', ()=>{
     const airportDepartmentList = data.addObjectList({
         type: 'airport_department', meta: {
-            id_airport: 'character(100) NOT NULL',
+            id_airport: TYPES.char100,
         }
     });
     const airportListItems = data.getObjectList({type: 'airport'}).getItems();
-    let counter = 0;
 
     for(const airport of airportListItems){
         const airportId = airport.getId();
-        const DEPARTMENT_COUNT = 9 + Math.ceil(Math.random() * 11); // количество компаний 10-20
-        for (let i = 0; i < DEPARTMENT_COUNT; i++){
-            counter++;
-            const department = airportDepartmentList.add({ codeSfx: counter });
+        for (let i = 0; i < AIRPORT_DEPARTMENT_COUNT; i++){
+            const department = airportDepartmentList.add();
             department.setParent({ parent: airport });
             department.id_airport = airportId;
         }    
@@ -672,30 +681,27 @@ codeBlock('ДЕПАРТАМЕНТЫ В АЭРОПОРТАХ', ()=>{
 codeBlock('СОТРУДНИКИ В ДЕПАРТАМЕНТАХ В АЭРОПОРТАХ', ()=>{
     const airportDepartmentWorkerList = data.addObjectList({
         type: 'airport_worker', meta: {
-            id_department: 'character(100) NOT NULL',
+            id_department: TYPES.char100,
         }
     });
     const airportDepartmentListItems = data.getObjectList({type: 'airport_department'}).getItems();
-    let counter = 0;
     
     for(const department of airportDepartmentListItems){
         const departmentId = department.getId();
-        const WORKER_COUNT = 19 + Math.ceil(Math.random() * 31); // количество компаний 20-50
-        for (let i = 0; i < WORKER_COUNT; i++){
-            counter++;
-            const worker = airportDepartmentWorkerList.add({ codeSfx: counter });
+        for (let i = 0; i < AIRPORT_WORKER_COUNT; i++){
+            const worker = airportDepartmentWorkerList.add();
             worker.setParent({ parent: department });
             worker.id_department = departmentId;
         }    
     }
 });
 codeBlock('ПЕРВИЧНОЕ НАЗНАЧЕНИЕ НАЧАЛЬНИКОВ ДЕПАРТАМЕНТОВ В АЭРОПОРТАХ', ()=>{
-    const airportWorkerOdJournal = data.addJournal({
-        name: 'airport_department_worker_join_journal', meta: {
-            add_time: 'bigint NOT NULL',
-            id_department: 'character(100) NOT NULL',
-            id_worker: 'character(100) NOT NULL',
-            role: 'character(100) NOT NULL',
+    const airportWorkerOdJournal = data.addObjectList({
+        type: 'airport_department_worker_join_journal', meta: {
+            add_time: TYPES.bigint,
+            id_department: TYPES.char100,
+            id_worker: TYPES.char100,
+            role: TYPES.char100,
         }
     });
     const airportListItems = data.getObjectList({type: 'airport'}).getItems();
@@ -706,72 +712,72 @@ codeBlock('ПЕРВИЧНОЕ НАЗНАЧЕНИЕ НАЧАЛЬНИКОВ ДЕП
             const headWorker = workerList.getRandomItem();
             for(const worker of workerList){
                 worker.role = worker === headWorker ? 'head': 'engineer';
-                airportWorkerOdJournal.add({
+                airportWorkerOdJournal.add({data: {
                     add_time: -1,
                     id_department: department.getId(),
                     id_worker: worker.getId(),
                     role: worker.role
-                });
+                }});
             }
         }
     }
 });
 codeBlock('СМЕНА НАЧАЛЬНИКОВ ДЕПАРТАМЕНТОВ В АЭРОПОРТАХ В ТЕЧЕНИЕ ГОДА', ()=>{
     const airportListItems = data.getObjectList({type: 'airport'}).getItems();
-    const airportWorkerOdJournal = data.getJournal({name: 'airport_department_worker_join_journal'});
+    const airportWorkerOdJournal = data.getObjectList({type: 'airport_department_worker_join_journal'});
 
     for(const airport of airportListItems){
-        for (let t = 0; t < BASE_WEEK_TERM; t = t + 3) { // период в течение которого (каждые 3 недели) происходили смены начальников
+        for (let t = 0; t < AIRPORT_HEAD_CHANGE_TERM; t++) { // период в течение которого (каждые 3 недели) происходили смены начальников
             const departmentList = airport.getChildList({type: 'airport_department'});
             for(const department of departmentList){
                 const workerList = department.getChildList({type: 'airport_worker'});
                 const headWorkerNew = workerList.getRandomItem();
                 const headWorkerOld = workerList.find(worker => worker.role === 'head');
-                airportWorkerOdJournal.add({
+                airportWorkerOdJournal.add({data: {
                     add_time: t,
                     id_department: department.getId(),
                     id_worker: headWorkerOld.getId(),
                     role: 'engineer'
-                });
-                airportWorkerOdJournal.add({
+                }});
+                airportWorkerOdJournal.add({data: {
                     add_time: t,
                     id_department: department.getId(),
                     id_worker: headWorkerNew.getId(),
                     role: 'head'
-                });
+                }});
             }
         }
     }
 });
 codeBlock('ПРИЛЕТЫ САМОЛЕТОВ В АЭРОПОРТЫ В ТЕЧЕНИЕ ГОДА (+ ИХ РЕМОНТ)', ()=>{
     
-    const airportAircraftFlyJournal = data.addJournal({
-        name: 'airport_aircraft_fly_journal', meta: {
-            add_time: 'bigint NOT NULL',
-            id_airport: 'character(100) NOT NULL',
-            id_aircraft: 'character(100) NOT NULL',
+    const airportAircraftFlyJournal = data.addObjectList({
+        type: 'airport_aircraft_fly_journal', meta: {
+            add_time: TYPES.bigint,
+            id_airport: TYPES.char100,
+            id_aircraft: TYPES.char100,
         }
     });
     const aircraftListItems = data.getObjectList({type: 'aircraft'}).getItems();
     const airportListItems = data.getObjectList({type: 'airport'}).getItems();
 
-    const aircraftWorkerRepairJournal = data.addJournal({
-        name: 'aircraft_worker_repair_journal', meta: {
-            add_time: 'bigint NOT NULL',
-            id_aircraft: 'character(100) NOT NULL',
-            id_worker: 'character(100) NOT NULL',
+    const aircraftWorkerRepairJournal = data.addObjectList({
+        type: 'aircraft_worker_repair_journal', meta: {
+            add_time: TYPES.bigint,
+            id_aircraft: TYPES.char100,
+            id_worker: TYPES.char100,
         }
     });
     const airportWorkerCatalog = catalogHelper();
 
     for(const aircraft of aircraftListItems){
-        for (let t = 0; t < BASE_DAY_TERM; t++) { // период в течение которого (каждый день) происходили прилеты самолетов
+        for (let t = 0; t < AIRCRAFT_FLY_TERM; t++) { // период в течение которого (каждый день) происходили прилеты самолетов
             const airport = airportListItems.getRandomItem();
-            airportAircraftFlyJournal.add({
+            airportAircraftFlyJournal.add({data: {
                 add_time: t,
                 id_aircraft: aircraft.getId(),
                 id_airport: airport.getId(),
-            });
+            }});
 
             const workerList = airportWorkerCatalog.get(airport.getId(), ()=>{
                 const departmentList = airport.getChildList({type: 'airport_department'});
@@ -783,11 +789,11 @@ codeBlock('ПРИЛЕТЫ САМОЛЕТОВ В АЭРОПОРТЫ В ТЕЧЕН
                 );
             });
             const worker = workerList.getRandomItem();
-            aircraftWorkerRepairJournal.add({
+            aircraftWorkerRepairJournal.add({data: {
                 add_time: t,
-                id_airport: airport.getId(),
+                id_aircraft: aircraft.getId(),
                 id_worker: worker.getId(),
-            });
+            }});
         }
     }
 });
@@ -814,7 +820,11 @@ console.log('data ready');
 // console.log(JSON.stringify(data, 0, 2));
 (async () => {
     const res = await data.fillPostgres();
-    //console.log({res});
+    for await (const i of Array(1)) {
+        await data.fillPostgresWithFakeData({size: 10});
+    }
+    // const triples = data.createTriples();
+    // console.log({triples});
     console.log('db ready');
     process.exit(0);
 })();
