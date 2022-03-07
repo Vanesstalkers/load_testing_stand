@@ -241,6 +241,20 @@ class fillDataObjectList {
     getMeta() {
         return this.#itemMeta;
     }
+    toTriples(){
+        const meta = this.getMeta();
+        let triples = [];
+
+        const items = Object.values(this.items);
+        for(const item of items){
+            for(const key of Object.keys(meta).filter(key => key !== 'id')){
+                triples.push([item.id, key, item[key]]);
+            }
+        }
+
+        return triples;
+    }
+
     /**
      * Сформировать SQL для записи каталога в БД
      * @returns сформированный SQL
@@ -311,7 +325,13 @@ class fillData {
     getObjectListIds({ type }) {
         return this[type].getKeys();
     }
-
+    createTriples() {
+        let result = [];
+        for (const item of Object.values(this)) {
+            result = result.concat( item.toTriples() );
+        };
+        return result;
+    }
     /**
      * Сформировать SQL для записи хранилища в БД.
      * @returns сформированный SQL
@@ -799,11 +819,12 @@ codeBlock('ПРИЛЕТЫ САМОЛЕТОВ В АЭРОПОРТЫ В ТЕЧЕН
 console.log('data ready');
 // console.log(JSON.stringify(data, 0, 2));
 (async () => {
-    // const res = await data.fillPostgres();
+    const res = await data.fillPostgres();
     for await (const i of Array(1)) {
         await data.fillPostgresWithFakeData({size: 10});
     }
-    //console.log({res});
+    // const triples = data.createTriples();
+    // console.log({triples});
     console.log('db ready');
     process.exit(0);
 })();
